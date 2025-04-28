@@ -12,6 +12,9 @@ from flask_jwt_extended import (
     JWTManager, create_access_token,
     jwt_required, get_jwt_identity
 )
+from sqlalchemy import text
+from flask_migrate import Migrate
+
 
 app = Flask(__name__)
 app.config['JWT_SECRET_KEY'] = 'your-secret-key-here'  # Замените на реальный секретный ключ
@@ -20,31 +23,40 @@ jwt = JWTManager(app)
 # Инициализация БД
 init_db(app)
 
+migrate = Migrate(app, db)
+
+
 # ====================== Аутентификация ======================
 
 @app.route('/api/register', methods=['POST'])
 def register():
-    """
-    Регистрация нового пользователя.
-    Принимает: name, password, sex (опционально)
-    Возвращает: access_token
-    """
     data = request.get_json()
     hashed_password = generate_password_hash(data['password'])
     
-    new_user = User(
-        name=data['name'],
-        sex=data.get('sex'),
-        password=hashed_password
-    )
-    
     try:
-        db.session.add(new_user)
-        db.session.commit()
+        # Создаем пользователя и связанные записи в одной транзакции
+        with db.session.begin_nested():
+            new_user = User(
+                name=data['name'],
+                sex=data.get('sex'),
+                password=hashed_password
+            )
+            db.session.add(new_user)
+            db.session.flush()  # Получаем user_id
+            
+            # Создаем статистику с дефолтными значениями
+            stats = UserStats(user_id=new_user.user_id)
+            db.session.add(stats)
+            
+            # Не создаем инвентарь, если не указан product_id
+            if 'product_id' in data:
+                inventory = UserInventory(
+                    user_id=new_user.user_id,
+                    product_id=data['product_id'],
+                    is_equipped=False
+                )
+                db.session.add(inventory)
         
-        # Создаем связанные записи
-        db.session.add(UserStats(user_id=new_user.user_id))
-        db.session.add(UserInventory(user_id=new_user.user_id))
         db.session.commit()
         
         access_token = create_access_token(identity=new_user.user_id)
@@ -52,10 +64,12 @@ def register():
             'message': 'User created successfully',
             'access_token': access_token
         }), 201
+        
     except Exception as e:
         db.session.rollback()
         return jsonify({'error': str(e)}), 400
-
+    
+    
 @app.route('/api/login', methods=['POST'])
 def login():
     """
@@ -308,17 +322,4 @@ def guilds():
 # ====================== Запуск приложения ======================
 
 if __name__ == '__main__':
-    with app.app_context():
-        # Удаляем и пересоздаем таблицы
-        db.reflect()
-        db.drop_all()  # Удаляем без параметров
-        db.create_all()
-        
-        # Тестовые данные
-        if not User.query.first():
-            hashed_password = generate_password_hash('admin123')
-            test_user = User(name="admin", password=hashed_password)
-            db.session.add(test_user)
-            db.session.commit()
-    
     app.run(debug=True)
