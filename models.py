@@ -49,6 +49,20 @@ class Product(db.Model):
     buff = db.relationship('ProductBuff', back_populates='product', uselist=False, cascade='all, delete-orphan')
     inventory_items = db.relationship('UserInventory', back_populates='product')
 
+    @classmethod
+    def get_daily_discounts(cls):
+        """Возвращает 3 случайных товара со скидкой на текущий день"""
+        import random
+        from datetime import date
+        
+        # Используем текущую дату как seed для детерминированного рандома
+        today = date.today()
+        random.seed(f"{today.year}-{today.month}-{today.day}")
+        
+        # Получаем все товары и выбираем 3 случайных
+        all_products = cls.query.all()
+        return random.sample(all_products, min(3, len(all_products)))
+
 class ProductBuff(db.Model):
     """Бафы товаров"""
     __tablename__ = 'products_buffs'

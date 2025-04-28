@@ -14,7 +14,9 @@ from flask_jwt_extended import (
 )
 from sqlalchemy import text
 from flask_migrate import Migrate
-
+from datetime import date
+import random
+import math
 
 app = Flask(__name__)
 app.config['JWT_SECRET_KEY'] = 'your-secret-key-here'  # Замените на реальный секретный ключ
@@ -69,7 +71,7 @@ def register():
         db.session.rollback()
         return jsonify({'error': str(e)}), 400
     
-    
+
 @app.route('/api/login', methods=['POST'])
 def login():
     """
@@ -140,6 +142,7 @@ def user_stats(user_id):
         return jsonify({'message': 'Stats updated'})
 
 # ====================== Магазин и инвентарь ======================
+DISCOUNT_PERCENT = 25  # 25% скидка
 
 @app.route('/api/products', methods=['GET'])
 def get_products():
@@ -158,32 +161,58 @@ def get_products():
 @app.route('/api/products/<int:product_id>/buy', methods=['POST'])
 @jwt_required()
 def buy_product(product_id):
-    """
-    Покупка товара пользователем.
-    Возвращает: сообщение об успехе/ошибке
-    """
+    """Покупка товара с учетом скидки"""
     user_id = get_jwt_identity()
     user = User.query.get_or_404(user_id)
     product = Product.query.get_or_404(product_id)
     
-    if user.stats.money < product.price:
+    # Получаем товары со скидкой на сегодня
+    discounted_products = Product.get_daily_discounts()
+    discounted_ids = [p.product_id for p in discounted_products]
+    
+    # Проверяем есть ли скидка на этот товар
+    is_discounted = product_id in discounted_ids
+    price = int(math.ceil(product.price * (100 - DISCOUNT_PERCENT) / 100)) if is_discounted else product.price
+    
+    if user.stats.money < price:
         return jsonify({'error': 'Not enough money'}), 400
     
     try:
+        # Покупка
+        user.stats.money -= price
         new_item = UserInventory(
             user_id=user_id,
             product_id=product_id,
             is_equipped=False
         )
-        
-        user.stats.money -= product.price
-        
         db.session.add(new_item)
         db.session.commit()
-        return jsonify({'message': 'Product purchased'})
+        
+        return jsonify({
+            'message': 'Product purchased',
+            'discounted': is_discounted,
+            'price_paid': price,
+            'saved': (product.price - price) if is_discounted else 0
+        })
     except Exception as e:
         db.session.rollback()
         return jsonify({'error': str(e)}), 400
+
+@app.route('/api/daily-discounts', methods=['GET'])
+def get_daily_discounts():
+    """Получить 3 случайных товара со скидкой на сегодня"""
+    discounted_products = Product.get_daily_discounts()
+    
+    return jsonify([{
+        'id': p.product_id,
+        'name': p.product_name,
+        'original_price': p.price,
+        'discounted_price': int(p.price * (100 - DISCOUNT_PERCENT) / 100),
+        'discount_percent': DISCOUNT_PERCENT,
+        'category': p.category,
+        'image_url': p.image_url
+    } for p in discounted_products])
+
 
 # ====================== Задания ======================
 
