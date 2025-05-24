@@ -5,6 +5,9 @@ from models import User, Item, Task, UserInventory, Clan, ClanMember, Friendship
 from database import db
 import os
 from dotenv import load_dotenv
+from flask import render_template_string
+from sqlalchemy import inspect, text
+
 
 # Инициализация приложения
 load_dotenv()
@@ -38,11 +41,7 @@ def register():
     db.session.commit()
     
     # Добавляем дефолтные задания
-    default_tasks = [
-        Task(task_text="Пить воду", reward_exp=10, reward_coins=5, penalty=3, 
-             cooldown=timedelta(hours=1), is_default=True, creator_id=new_user.user_id),
-        # ... другие дефолтные задания
-    ]
+    default_tasks = [Task( task_text="Пить воду", task_type="custom", reward_exp=10, reward_coins=5, penalty=3, cooldown=timedelta(hours=1), is_default=True, creator_id=new_user.user_id ), Task( task_text="Сделать 10 приседаний", task_type="custom", reward_exp=15, reward_coins=8, penalty=5, cooldown=timedelta(hours=2), is_default=True, creator_id=new_user.user_id ), Task( task_text="Поработать 25 минут без отвлечений", task_type="custom", reward_exp=20, reward_coins=10, penalty=7, cooldown=timedelta(hours=3), is_default=True, creator_id=new_user.user_id ), Task( task_text="Записать 3 вещи, за которые благодарен", task_type="custom", reward_exp=12, reward_coins=6, penalty=3, cooldown=timedelta(days=1), is_default=True, creator_id=new_user.user_id ), Task( task_text="Написать другу/родственнику", task_type="custom", reward_exp=18, reward_coins=9, penalty=4, cooldown=timedelta(hours=6), is_default=True, creator_id=new_user.user_id ) ]
     db.session.add_all(default_tasks)
     db.session.commit()
     
@@ -55,6 +54,7 @@ def get_user(telegram_id):
         "nickname": user.nickname,
         "level": user.level,
         "coins": user.coins,
+        "exp": user.exp,
         "hp": f"{user.hp}/{user.max_hp}"
     })
 
@@ -215,6 +215,71 @@ def add_friend():
     db.session.commit()
     
     return jsonify({"success": True})
+
+
+
+
+
+
+
+@app.route('/dbview')
+def db_view():
+    try:
+        inspector = inspect(db.engine)
+        tables = inspector.get_table_names()
+        table_data = {}
+
+        with db.engine.connect() as conn:
+            for table in tables:
+                # Используем text() для безопасного SQL
+                result = conn.execute(text(f'SELECT * FROM "{table}" LIMIT 20'))
+                table_data[table] = [dict(row._mapping) for row in result]
+
+        html = """
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <title>Database Viewer</title>
+            <style>
+                table { border-collapse: collapse; margin: 20px; }
+                th, td { border: 1px solid #ddd; padding: 8px; }
+                th { background-color: #f2f2f2; }
+                tr:nth-child(even) { background-color: #f9f9f9; }
+                h2 { margin-top: 30px; }
+            </style>
+        </head>
+        <body>
+            <h1>Database Tables</h1>
+            {% for table, rows in tables.items() %}
+            <h2>{{ table }}</h2>
+            {% if rows %}
+            <table>
+                <tr>
+                    {% for column in rows[0].keys() %}
+                    <th>{{ column }}</th>
+                    {% endfor %}
+                </tr>
+                {% for row in rows %}
+                <tr>
+                    {% for value in row.values() %}
+                    <td>{{ value }}</td>
+                    {% endfor %}
+                </tr>
+                {% endfor %}
+            </table>
+            {% else %}
+            <p>No data in this table</p>
+            {% endif %}
+            {% endfor %}
+        </body>
+        </html>
+        """
+        return render_template_string(html, tables=table_data)
+
+    except Exception as e:
+        return f"Error: {str(e)}", 500
+
+
 
 # Запуск приложения
 if __name__ == '__main__':
