@@ -2,174 +2,211 @@ from datetime import datetime
 from database import db
 
 class User(db.Model):
-    """Таблица пользователей"""
+    """Модель пользователя"""
     __tablename__ = 'users'
     
     user_id = db.Column(db.Integer, primary_key=True)
-    name = db.Column(db.String(255), nullable=False, unique=True)
-    sex = db.Column(db.String(1))  # 'M' или 'W'
-    registr_date = db.Column(db.DateTime, default=datetime.utcnow)
-    password = db.Column(db.String(255), nullable=False)
-    
+    telegram_id = db.Column(db.String(50), unique=True, nullable=False)
+    nickname = db.Column(db.String(50), nullable=False)
+    level = db.Column(db.Integer, default=1, nullable=False)
+    exp = db.Column(db.Integer, default=0, nullable=False)
+    coins = db.Column(db.Integer, default=0, nullable=False)
+    hp = db.Column(db.Integer, default=100, nullable=False)
+    max_hp = db.Column(db.Integer, default=100, nullable=False)
+    shield_expires_at = db.Column(db.DateTime)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
     # Связи
-    stats = db.relationship('UserStats', back_populates='user', uselist=False, cascade='all, delete-orphan')
-    inventory_items = db.relationship('UserInventory', back_populates='user', cascade='all, delete-orphan')
-    created_tasks = db.relationship('Task', back_populates='creator', foreign_keys='Task.created_by')
-    completed_tasks = db.relationship('TaskHistory', back_populates='user', foreign_keys='TaskHistory.user_id')
-    guild_memberships = db.relationship('GuildMembership', back_populates='user', cascade='all, delete-orphan')
-    friends_initiated = db.relationship('FriendsGuild', back_populates='user', foreign_keys='FriendsGuild.user_id')
-    friends_received = db.relationship('FriendsGuild', back_populates='friend', foreign_keys='FriendsGuild.friend_id')
+    inventory_items = db.relationship('UserInventory', back_populates='user')
+    created_tasks = db.relationship('Task', back_populates='creator')
+    favorite_tasks = db.relationship('FavoriteTask', back_populates='user')
+    clan_membership = db.relationship('ClanMember', back_populates='user', uselist=False)
+    sent_friend_requests = db.relationship('FriendRequest', foreign_keys='FriendRequest.from_user_id', back_populates='from_user')
+    received_friend_requests = db.relationship('FriendRequest', foreign_keys='FriendRequest.to_user_id', back_populates='to_user')
+    friendships1 = db.relationship('Friendship', foreign_keys='Friendship.user1_id', back_populates='user1')
+    friendships2 = db.relationship('Friendship', foreign_keys='Friendship.user2_id', back_populates='user2')
 
-class UserStats(db.Model):
-    """Показатели пользователя"""
-    __tablename__ = 'users_stats'
-    
-    user_id = db.Column(db.Integer, db.ForeignKey('users.user_id', ondelete='CASCADE'), primary_key=True)
-    health_points = db.Column(db.Integer, default=100)
-    mana = db.Column(db.Integer, default=50)
-    max_health_points = db.Column(db.Integer, default=100)
-    max_mana = db.Column(db.Integer, default=50)
-    level = db.Column(db.Integer, default=1)
-    experience = db.Column(db.Integer, default=0)
-    money = db.Column(db.Integer, default=0)
-    last_update = db.Column(db.DateTime, default=datetime.utcnow)
-    
-    user = db.relationship('User', back_populates='stats')
 
-class Product(db.Model):
-    """Товары магазина"""
-    __tablename__ = 'products'
+class Item(db.Model):
+    """Модель предмета в магазине"""
+    __tablename__ = 'items'
     
-    product_id = db.Column(db.Integer, primary_key=True)
-    product_name = db.Column(db.String(255), nullable=False)
-    price = db.Column(db.Integer, nullable=False)
-    category = db.Column(db.String(100))
-    image_url = db.Column(db.String(255))
-    
-    buff = db.relationship('ProductBuff', back_populates='product', uselist=False, cascade='all, delete-orphan')
-    inventory_items = db.relationship('UserInventory', back_populates='product')
+    item_id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(100), nullable=False)
+    description = db.Column(db.Text)
+    item_type = db.Column(db.String(20), nullable=False)  # 'headgear', 'clothing', 'pet', 'potion'
+    slot = db.Column(db.String(20))  # 'head', 'body', 'legs', 'pet'
+    base_price = db.Column(db.Integer, nullable=False)
+    effect_type = db.Column(db.String(30))
+    effect_value = db.Column(db.Numeric(5, 2))
+    is_unique = db.Column(db.Boolean, default=False)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
-    @classmethod
-    def get_daily_discounts(cls):
-        """Возвращает 3 случайных товара со скидкой на текущий день"""
-        import random
-        from datetime import date
-        
-        # Используем текущую дату как seed для детерминированного рандома
-        today = date.today()
-        random.seed(f"{today.year}-{today.month}-{today.day}")
-        
-        # Получаем все товары и выбираем 3 случайных
-        all_products = cls.query.all()
-        return random.sample(all_products, min(3, len(all_products)))
+    # Связи
+    owned_by = db.relationship('UserInventory', back_populates='item')
 
-class ProductBuff(db.Model):
-    """Бафы товаров"""
-    __tablename__ = 'products_buffs'
-    
-    buff_id = db.Column(db.Integer, primary_key=True)
-    product_id = db.Column(db.Integer, db.ForeignKey('products.product_id', ondelete='CASCADE'), nullable=False)
-    buff_type = db.Column(db.String(50), nullable=False)
-    buff_value = db.Column(db.Integer, nullable=False)
-    buff_duration = db.Column(db.Integer)  # в минутах (None для постоянных)
-    
-    product = db.relationship('Product', back_populates='buff')
 
 class UserInventory(db.Model):
-    """Инвентарь пользователя"""
-    __tablename__ = 'users_inventory'
+    """Модель инвентаря пользователя"""
+    __tablename__ = 'user_inventory'
     
     inventory_id = db.Column(db.Integer, primary_key=True)
-    user_id = db.Column(db.Integer, db.ForeignKey('users.user_id', ondelete='CASCADE'), nullable=False)
-    product_id = db.Column(db.Integer, db.ForeignKey('products.product_id', ondelete='CASCADE'), nullable=False)
+    user_id = db.Column(db.Integer, db.ForeignKey('users.user_id'), nullable=False)
+    item_id = db.Column(db.Integer, db.ForeignKey('items.item_id'), nullable=False)
     is_equipped = db.Column(db.Boolean, default=False)
-    acquire_date = db.Column(db.DateTime, default=datetime.utcnow)
-    
+    equipped_slot = db.Column(db.String(20))
+    purchased_at = db.Column(db.DateTime, default=datetime.utcnow)
+    purchase_price = db.Column(db.Integer, nullable=False)
+
+    # Связи
     user = db.relationship('User', back_populates='inventory_items')
-    product = db.relationship('Product', back_populates='inventory_items')
+    item = db.relationship('Item', back_populates='owned_by')
 
-class Guild(db.Model):
-    """Гильдии"""
-    __tablename__ = 'guilds'
-    
-    guild_id = db.Column(db.Integer, primary_key=True)
-    name = db.Column(db.String(255), unique=True, nullable=False)
-    description = db.Column(db.Text)
-    created_at = db.Column(db.DateTime, default=datetime.utcnow)
-    logo_url = db.Column(db.String(255))
-    
-    members = db.relationship('GuildMembership', back_populates='guild', cascade='all, delete-orphan')
-    tasks = db.relationship('GuildTask', back_populates='guild', cascade='all, delete-orphan')
-
-class GuildMembership(db.Model):
-    """Участники гильдий"""
-    __tablename__ = 'guilds_membership'
-    
-    membership_id = db.Column(db.Integer, primary_key=True)
-    guild_id = db.Column(db.Integer, db.ForeignKey('guilds.guild_id', ondelete='CASCADE'), nullable=False)
-    user_id = db.Column(db.Integer, db.ForeignKey('users.user_id', ondelete='CASCADE'), nullable=False)
-    role = db.Column(db.String(50), default='member', nullable=False)  # 'leader', 'officer', 'member'
-    join_date = db.Column(db.DateTime, default=datetime.utcnow)
-    
-    guild = db.relationship('Guild', back_populates='members')
-    user = db.relationship('User', back_populates='guild_memberships')
-
-class FriendsGuild(db.Model):
-    """Друзья и гильдии пользователя"""
-    __tablename__ = 'friends_guilds'
-    
-    id = db.Column(db.Integer, primary_key=True)
-    user_id = db.Column(db.Integer, db.ForeignKey('users.user_id', ondelete='CASCADE'), nullable=False)
-    friend_id = db.Column(db.Integer, db.ForeignKey('users.user_id', ondelete='CASCADE'), nullable=False)
-    guild_id = db.Column(db.Integer, db.ForeignKey('guilds.guild_id', ondelete='CASCADE'))
-    status = db.Column(db.String(20), nullable=False)  # 'friend', 'guild_member'
-    
-    user = db.relationship('User', foreign_keys=[user_id], back_populates='friends_initiated')
-    friend = db.relationship('User', foreign_keys=[friend_id], back_populates='friends_received')
-    guild = db.relationship('Guild')
 
 class Task(db.Model):
-    """Задания"""
+    """Модель задания"""
     __tablename__ = 'tasks'
     
     task_id = db.Column(db.Integer, primary_key=True)
-    title = db.Column(db.String(255), nullable=False)
-    description = db.Column(db.Text)
-    difficulty = db.Column(db.String(50), nullable=False)  # 'easy', 'medium', 'hard'
-    category = db.Column(db.String(100))  # 'study', 'sport', etc
-    base_reward = db.Column(db.Integer, nullable=False)
-    is_repeatable = db.Column(db.Boolean, default=False)
-    cooldown_hours = db.Column(db.Integer)  # None для одноразовых
-    created_by = db.Column(db.Integer, db.ForeignKey('users.user_id', ondelete='SET NULL'))
-    
-    creator = db.relationship('User', back_populates='created_tasks', foreign_keys=[created_by])
-    completions = db.relationship('TaskHistory', back_populates='task', cascade='all, delete-orphan')
-    guild_tasks = db.relationship('GuildTask', back_populates='task', cascade='all, delete-orphan')
+    creator_id = db.Column(db.Integer, db.ForeignKey('users.user_id'))
+    clan_id = db.Column(db.Integer, db.ForeignKey('clans.clan_id'))
+    task_text = db.Column(db.Text, nullable=False)
+    task_type = db.Column(db.String(10), nullable=False)  # 'custom', 'clan'
+    reward_exp = db.Column(db.Integer, nullable=False)
+    reward_coins = db.Column(db.Integer, nullable=False)
+    penalty = db.Column(db.Integer, nullable=False)
+    cooldown = db.Column(db.Interval, nullable=False)
+    is_default = db.Column(db.Boolean, default=False)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
-class TaskHistory(db.Model):
-    """История выполнения заданий"""
-    __tablename__ = 'tasks_history'
+    # Связи
+    creator = db.relationship('User', back_populates='created_tasks')
+    clan = db.relationship('Clan', back_populates='tasks')
+    favorited_by = db.relationship('FavoriteTask', back_populates='task')
+    completions = db.relationship('CompletedTask', back_populates='task')
+
+
+class CompletedTask(db.Model):
+    """Модель выполненного задания"""
+    __tablename__ = 'completed_tasks'
     
-    history_id = db.Column(db.Integer, primary_key=True)
-    task_id = db.Column(db.Integer, db.ForeignKey('tasks.task_id', ondelete='CASCADE'), nullable=False)
-    user_id = db.Column(db.Integer, db.ForeignKey('users.user_id', ondelete='CASCADE'), nullable=False)
-    completed_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
-    reward_earned = db.Column(db.Integer, nullable=False)
-    
+    completion_id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('users.user_id'), nullable=False)
+    task_id = db.Column(db.Integer, db.ForeignKey('tasks.task_id'), nullable=False)
+    completed_at = db.Column(db.DateTime, default=datetime.utcnow)
+    next_available = db.Column(db.DateTime, nullable=False)
+
+    # Связи
+    user = db.relationship('User')
     task = db.relationship('Task', back_populates='completions')
-    user = db.relationship('User', back_populates='completed_tasks')
 
-class GuildTask(db.Model):
-    """Гильдейские задания"""
-    __tablename__ = 'guilds_tasks'
+
+class FavoriteTask(db.Model):
+    """Модель избранных заданий"""
+    __tablename__ = 'favorite_tasks'
     
-    guild_task_id = db.Column(db.Integer, primary_key=True)
-    guild_id = db.Column(db.Integer, db.ForeignKey('guilds.guild_id', ondelete='CASCADE'), nullable=False)
-    task_id = db.Column(db.Integer, db.ForeignKey('tasks.task_id', ondelete='CASCADE'), nullable=False)
-    assigned_by = db.Column(db.Integer, db.ForeignKey('users.user_id', ondelete='SET NULL'))
-    assigned_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
-    due_date = db.Column(db.DateTime)
-    is_active = db.Column(db.Boolean, default=True, nullable=False)
+    favorite_id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('users.user_id'), nullable=False)
+    task_id = db.Column(db.Integer, db.ForeignKey('tasks.task_id'), nullable=False)
+    position = db.Column(db.Integer, nullable=False)
+
+    # Связи
+    user = db.relationship('User', back_populates='favorite_tasks')
+    task = db.relationship('Task', back_populates='favorited_by')
+
+    __table_args__ = (
+        db.UniqueConstraint('user_id', 'task_id', name='unique_user_task'),
+        db.UniqueConstraint('user_id', 'position', name='unique_user_position'),
+        db.CheckConstraint('position BETWEEN 1 AND 4', name='position_range')
+    )
+
+
+class Clan(db.Model):
+    """Модель клана"""
+    __tablename__ = 'clans'
     
-    guild = db.relationship('Guild', back_populates='tasks')
-    task = db.relationship('Task', back_populates='guild_tasks')
+    clan_id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(50), unique=True, nullable=False)
+    creator_id = db.Column(db.Integer, db.ForeignKey('users.user_id'))
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+    # Связи
+    creator = db.relationship('User')
+    members = db.relationship('ClanMember', back_populates='clan')
+    tasks = db.relationship('Task', back_populates='clan')
+    join_requests = db.relationship('ClanRequest', back_populates='clan')
+
+
+class ClanMember(db.Model):
+    """Модель участника клана"""
+    __tablename__ = 'clan_members'
+    
+    membership_id = db.Column(db.Integer, primary_key=True)
+    clan_id = db.Column(db.Integer, db.ForeignKey('clans.clan_id'), nullable=False)
+    user_id = db.Column(db.Integer, db.ForeignKey('users.user_id'), nullable=False)
+    joined_at = db.Column(db.DateTime, default=datetime.utcnow)
+    is_leader = db.Column(db.Boolean, default=False)
+
+    # Связи
+    clan = db.relationship('Clan', back_populates='members')
+    user = db.relationship('User', back_populates='clan_membership')
+
+    __table_args__ = (
+        db.UniqueConstraint('user_id', name='unique_user_clan'),
+    )
+
+
+class ClanRequest(db.Model):
+    """Модель заявки в клан"""
+    __tablename__ = 'clan_requests'
+    
+    request_id = db.Column(db.Integer, primary_key=True)
+    clan_id = db.Column(db.Integer, db.ForeignKey('clans.clan_id'), nullable=False)
+    user_id = db.Column(db.Integer, db.ForeignKey('users.user_id'), nullable=False)
+    status = db.Column(db.String(10), default='pending')  # 'pending', 'approved', 'rejected'
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    processed_at = db.Column(db.DateTime)
+
+    # Связи
+    clan = db.relationship('Clan', back_populates='join_requests')
+    user = db.relationship('User')
+
+
+class Friendship(db.Model):
+    """Модель дружеских связей"""
+    __tablename__ = 'friendships'
+    
+    friendship_id = db.Column(db.Integer, primary_key=True)
+    user1_id = db.Column(db.Integer, db.ForeignKey('users.user_id'), nullable=False)
+    user2_id = db.Column(db.Integer, db.ForeignKey('users.user_id'), nullable=False)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+    # Связи
+    user1 = db.relationship('User', foreign_keys=[user1_id], back_populates='friendships1')
+    user2 = db.relationship('User', foreign_keys=[user2_id], back_populates='friendships2')
+
+    __table_args__ = (
+        db.UniqueConstraint('user1_id', 'user2_id', name='unique_friendship'),
+        db.CheckConstraint('user1_id < user2_id', name='check_user_order')
+    )
+
+
+class FriendRequest(db.Model):
+    """Модель заявки в друзья"""
+    __tablename__ = 'friend_requests'
+    
+    request_id = db.Column(db.Integer, primary_key=True)
+    from_user_id = db.Column(db.Integer, db.ForeignKey('users.user_id'), nullable=False)
+    to_user_id = db.Column(db.Integer, db.ForeignKey('users.user_id'), nullable=False)
+    status = db.Column(db.String(10), default='pending')  # 'pending', 'approved', 'rejected'
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    processed_at = db.Column(db.DateTime)
+
+    # Связи
+    from_user = db.relationship('User', foreign_keys=[from_user_id], back_populates='sent_friend_requests')
+    to_user = db.relationship('User', foreign_keys=[to_user_id], back_populates='received_friend_requests')
+
+    __table_args__ = (
+        db.CheckConstraint('from_user_id != to_user_id', name='check_not_self'),
+    )

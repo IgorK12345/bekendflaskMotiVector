@@ -1,354 +1,221 @@
 from flask import Flask, request, jsonify
-from sqlalchemy import or_, and_
+from flask_sqlalchemy import SQLAlchemy
 from datetime import datetime, timedelta
-from database import init_db, db
-from models import (
-    User, UserStats, Product, ProductBuff, 
-    UserInventory, Guild, GuildMembership,
-    FriendsGuild, Task, TaskHistory, GuildTask
-)
-from werkzeug.security import generate_password_hash, check_password_hash
-from flask_jwt_extended import (
-    JWTManager, create_access_token,
-    jwt_required, get_jwt_identity
-)
-from sqlalchemy import text
-from flask_migrate import Migrate
-from datetime import date
-import random
-import math
+from models import User, Item, Task, UserInventory, Clan, ClanMember, Friendship, FriendRequest, FavoriteTask, CompletedTask
+from database import db
+import os
+from dotenv import load_dotenv
 
+# Инициализация приложения
+load_dotenv()
 app = Flask(__name__)
-app.config['JWT_SECRET_KEY'] = 'your-secret-key-here'  # Замените на реальный секретный ключ
-jwt = JWTManager(app)
+app.config['SQLALCHEMY_DATABASE_URI'] = os.getenv('DB_URI')
+app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+db.init_app(app)
 
-# Инициализация БД
-init_db(app)
+# Создаем таблицы при первом запуске
+with app.app_context():
+    db.create_all()
 
-migrate = Migrate(app, db)
+# Вспомогательные функции
+def get_current_user(telegram_id):
+    return User.query.filter_by(telegram_id=telegram_id).first_or_404()
 
+# API Endpoints
 
-# ====================== Аутентификация ======================
-
+# 1. Аутентификация и пользователь
 @app.route('/api/register', methods=['POST'])
 def register():
     data = request.get_json()
-    hashed_password = generate_password_hash(data['password'])
+    if User.query.filter_by(telegram_id=data['telegram_id']).first():
+        return jsonify({"error": "User already exists"}), 400
     
-    try:
-        # Создаем пользователя и связанные записи в одной транзакции
-        with db.session.begin_nested():
-            new_user = User(
-                name=data['name'],
-                sex=data.get('sex'),
-                password=hashed_password
-            )
-            db.session.add(new_user)
-            db.session.flush()  # Получаем user_id
-            
-            # Создаем статистику с дефолтными значениями
-            stats = UserStats(user_id=new_user.user_id)
-            db.session.add(stats)
-            
-            # Не создаем инвентарь, если не указан product_id
-            if 'product_id' in data:
-                inventory = UserInventory(
-                    user_id=new_user.user_id,
-                    product_id=data['product_id'],
-                    is_equipped=False
-                )
-                db.session.add(inventory)
-        
-        db.session.commit()
-        
-        access_token = create_access_token(identity=new_user.user_id)
-        return jsonify({
-            'message': 'User created successfully',
-            'access_token': access_token
-        }), 201
-        
-    except Exception as e:
-        db.session.rollback()
-        return jsonify({'error': str(e)}), 400
+    new_user = User(
+        telegram_id=data['telegram_id'],
+        nickname=data['nickname']
+    )
+    db.session.add(new_user)
+    db.session.commit()
     
-
-@app.route('/api/login', methods=['POST'])
-def login():
-    """
-    Аутентификация пользователя.
-    Принимает: name, password
-    Возвращает: access_token и user_id
-    """
-    data = request.get_json()
-    user = User.query.filter_by(name=data['name']).first()
+    # Добавляем дефолтные задания
+    default_tasks = [
+        Task(task_text="Пить воду", reward_exp=10, reward_coins=5, penalty=3, 
+             cooldown=timedelta(hours=1), is_default=True, creator_id=new_user.user_id),
+        # ... другие дефолтные задания
+    ]
+    db.session.add_all(default_tasks)
+    db.session.commit()
     
-    if user and check_password_hash(user.password, data['password']):
-        access_token = create_access_token(identity=user.user_id)
-        return jsonify({
-            'access_token': access_token,
-            'user_id': user.user_id
-        })
-    return jsonify({'error': 'Invalid credentials'}), 401
+    return jsonify({"user_id": new_user.user_id}), 201
 
-# ====================== Пользователи ======================
-
-@app.route('/api/users/<int:user_id>', methods=['GET'])
-@jwt_required()
-def get_user(user_id):
-    """
-    Получение информации о пользователе.
-    Возвращает: user_id, name, level
-    """
-    user = User.query.get_or_404(user_id)
+@app.route('/api/user/<telegram_id>', methods=['GET'])
+def get_user(telegram_id):
+    user = get_current_user(telegram_id)
     return jsonify({
-        'user_id': user.user_id,
-        'name': user.name,
-        'level': user.stats.level if user.stats else 1
+        "nickname": user.nickname,
+        "level": user.level,
+        "coins": user.coins,
+        "hp": f"{user.hp}/{user.max_hp}"
     })
 
-@app.route('/api/users/<int:user_id>/stats', methods=['GET', 'PUT'])
-@jwt_required()
-def user_stats(user_id):
-    """
-    Получение/обновление статистики пользователя.
-    GET: Возвращает health, mana, level, money
-    PUT: Обновляет health, mana, money (только для текущего пользователя)
-    """
-    if request.method == 'GET':
-        stats = UserStats.query.get_or_404(user_id)
-        return jsonify({
-            'health': stats.health_points,
-            'mana': stats.mana,
-            'level': stats.level,
-            'money': stats.money
-        })
-    
-    elif request.method == 'PUT':
-        current_user_id = get_jwt_identity()
-        if current_user_id != user_id:
-            return jsonify({'error': 'Unauthorized'}), 403
-            
-        stats = UserStats.query.get_or_404(user_id)
-        data = request.get_json()
-        
-        if 'health' in data:
-            stats.health_points = data['health']
-        if 'mana' in data:
-            stats.mana = data['mana']
-        if 'money' in data:
-            stats.money = data['money']
-            
-        db.session.commit()
-        return jsonify({'message': 'Stats updated'})
-
-# ====================== Магазин и инвентарь ======================
-DISCOUNT_PERCENT = 25  # 25% скидка
-
-@app.route('/api/products', methods=['GET'])
-def get_products():
-    """
-    Получение списка всех товаров.
-    Возвращает: id, name, price, category для каждого товара
-    """
-    products = Product.query.all()
-    return jsonify([{
-        'id': p.product_id,
-        'name': p.product_name,
-        'price': p.price,
-        'category': p.category
-    } for p in products])
-
-@app.route('/api/products/<int:product_id>/buy', methods=['POST'])
-@jwt_required()
-def buy_product(product_id):
-    """Покупка товара с учетом скидки"""
-    user_id = get_jwt_identity()
-    user = User.query.get_or_404(user_id)
-    product = Product.query.get_or_404(product_id)
-    
-    # Получаем товары со скидкой на сегодня
-    discounted_products = Product.get_daily_discounts()
-    discounted_ids = [p.product_id for p in discounted_products]
-    
-    # Проверяем есть ли скидка на этот товар
-    is_discounted = product_id in discounted_ids
-    price = int(math.ceil(product.price * (100 - DISCOUNT_PERCENT) / 100)) if is_discounted else product.price
-    
-    if user.stats.money < price:
-        return jsonify({'error': 'Not enough money'}), 400
-    
-    try:
-        # Покупка
-        user.stats.money -= price
-        new_item = UserInventory(
-            user_id=user_id,
-            product_id=product_id,
-            is_equipped=False
-        )
-        db.session.add(new_item)
-        db.session.commit()
-        
-        return jsonify({
-            'message': 'Product purchased',
-            'discounted': is_discounted,
-            'price_paid': price,
-            'saved': (product.price - price) if is_discounted else 0
-        })
-    except Exception as e:
-        db.session.rollback()
-        return jsonify({'error': str(e)}), 400
-
-@app.route('/api/daily-discounts', methods=['GET'])
-def get_daily_discounts():
-    """Получить 3 случайных товара со скидкой на сегодня"""
-    discounted_products = Product.get_daily_discounts()
-    
-    return jsonify([{
-        'id': p.product_id,
-        'name': p.product_name,
-        'original_price': p.price,
-        'discounted_price': int(p.price * (100 - DISCOUNT_PERCENT) / 100),
-        'discount_percent': DISCOUNT_PERCENT,
-        'category': p.category,
-        'image_url': p.image_url
-    } for p in discounted_products])
-
-
-# ====================== Задания ======================
-
+# 2. Система заданий
 @app.route('/api/tasks', methods=['GET'])
-@jwt_required()
 def get_tasks():
-    """
-    Получение списка доступных заданий.
-    Возвращает: id, title, reward, difficulty, is_completed, can_repeat
-    """
-    user_id = get_jwt_identity()
+    telegram_id = request.args.get('telegram_id')
+    user = get_current_user(telegram_id)
     
-    # Получаем ID выполненных пользователем заданий
-    completed_tasks = [th.task_id for th in 
-                      TaskHistory.query.filter_by(user_id=user_id).all()]
-    
+    # Получаем все задания пользователя (личные + клановые если есть)
     tasks = Task.query.filter(
-        or_(
-            Task.created_by == None,  # Системные задания
-            Task.created_by == user_id  # Созданные текущим пользователем
-        )
+        (Task.creator_id == user.user_id) | 
+        (Task.clan_id == user.clan_membership.clan_id if user.clan_membership else False)
     ).all()
     
-    response = []
-    for task in tasks:
-        completed = task.task_id in completed_tasks
-        response.append({
-            'id': task.task_id,
-            'title': task.title,
-            'reward': task.base_reward,
-            'difficulty': task.difficulty,
-            'is_completed': completed,
-            'can_repeat': task.is_repeatable and not completed
-        })
-    
-    return jsonify(response)
+    return jsonify([{
+        "id": task.task_id,
+        "text": task.task_text,
+        "type": task.task_type,
+        "rewards": {"exp": task.reward_exp, "coins": task.reward_coins},
+        "penalty": task.penalty,
+        "cooldown": str(task.cooldown)
+    } for task in tasks])
 
 @app.route('/api/tasks/complete', methods=['POST'])
-@jwt_required()
 def complete_task():
-    """
-    Завершение задания пользователем.
-    Принимает: task_id
-    Возвращает: сообщение об успехе/ошибке
-    """
-    user_id = get_jwt_identity()
     data = request.get_json()
-    
+    user = get_current_user(data['telegram_id'])
     task = Task.query.get_or_404(data['task_id'])
-    user = User.query.get_or_404(user_id)
     
-    # Проверка на повторное выполнение
-    if not task.is_repeatable:
-        last_completion = TaskHistory.query.filter_by(
-            task_id=task.task_id,
-            user_id=user_id
-        ).first()
-        
-        if last_completion:
-            return jsonify({'error': 'Task already completed'}), 400
+    # Проверка что задание принадлежит пользователю или его клану
+    if task.creator_id != user.user_id and (
+        not user.clan_membership or task.clan_id != user.clan_membership.clan_id
+    ):
+        return jsonify({"error": "Not your task"}), 403
     
-    # Проверка cooldown для повторяемых заданий
-    if task.is_repeatable and task.cooldown_hours:
-        last_completion = TaskHistory.query.filter_by(
-            task_id=task.task_id,
-            user_id=user_id
-        ).order_by(TaskHistory.completed_at.desc()).first()
-        
-        if last_completion and (datetime.utcnow() - last_completion.completed_at) < timedelta(hours=task.cooldown_hours):
-            return jsonify({'error': f'Task on cooldown. Try again later'}), 400
+    # Начисляем награды
+    user.exp += task.reward_exp
+    user.coins += task.reward_coins
     
-    try:
-        # Запись в историю
-        history_entry = TaskHistory(
-            task_id=task.task_id,
-            user_id=user_id,
-            reward_earned=task.base_reward,
-            completed_at=datetime.utcnow()
+    # Проверка на повышение уровня
+    if user.exp >= user.level * 100:  # Пример формулы
+        user.level += 1
+        user.max_hp += 10
+    
+    # Записываем выполнение
+    completion = CompletedTask(
+        user_id=user.user_id,
+        task_id=task.task_id,
+        next_available=datetime.utcnow() + task.cooldown
+    )
+    db.session.add(completion)
+    db.session.commit()
+    
+    return jsonify({
+        "success": True,
+        "new_level": user.level,
+        "coins": user.coins,
+        "exp": user.exp
+    })
+
+# 3. Магазин и инвентарь
+@app.route('/api/shop', methods=['GET'])
+def get_shop():
+    items = Item.query.all()
+    return jsonify([{
+        "id": item.item_id,
+        "name": item.name,
+        "price": item.base_price,
+        "type": item.item_type
+    } for item in items])
+
+@app.route('/api/shop/buy', methods=['POST'])
+def buy_item():
+    data = request.get_json()
+    user = get_current_user(data['telegram_id'])
+    item = Item.query.get_or_404(data['item_id'])
+    
+    if user.coins < item.base_price:
+        return jsonify({"error": "Not enough coins"}), 400
+    
+    # Для зелий - мгновенное применение
+    if item.item_type == 'potion':
+        if item.effect_type == 'hp_restore':
+            user.hp = min(user.hp + item.effect_value, user.max_hp)
+        elif item.effect_type == 'shield':
+            user.shield_expires_at = datetime.utcnow() + timedelta(hours=item.effect_value)
+    else:
+        # Добавляем в инвентарь
+        inventory = UserInventory(
+            user_id=user.user_id,
+            item_id=item.item_id,
+            purchase_price=item.base_price
         )
-        
-        # Начисление награды
-        user.stats.money += task.base_reward
-        user.stats.experience += task.base_reward * 10
-        
-        db.session.add(history_entry)
-        db.session.commit()
-        
-        return jsonify({'message': 'Task completed successfully'})
-    except Exception as e:
-        db.session.rollback()
-        return jsonify({'error': str(e)}), 400
-
-# ====================== Гильдии ======================
-
-@app.route('/api/guilds', methods=['GET', 'POST'])
-@jwt_required()
-def guilds():
-    """
-    Управление гильдиями.
-    GET: Список всех гильдий (id, name, members_count)
-    POST: Создание новой гильдии (name, description)
-    """
-    if request.method == 'GET':
-        guilds = Guild.query.all()
-        return jsonify([{
-            'id': g.guild_id,
-            'name': g.name,
-            'members_count': len(g.members)
-        } for g in guilds])
+        db.session.add(inventory)
     
-    elif request.method == 'POST':
-        user_id = get_jwt_identity()
-        data = request.get_json()
-        
-        try:
-            new_guild = Guild(
-                name=data['name'],
-                description=data.get('description')
-            )
-            db.session.add(new_guild)
-            db.session.flush()
-            
-            # Создателя делаем лидером
-            db.session.add(GuildMembership(
-                guild_id=new_guild.guild_id,
-                user_id=user_id,
-                role='leader'
-            ))
-            
-            db.session.commit()
-            return jsonify({'guild_id': new_guild.guild_id}), 201
-        except Exception as e:
-            db.session.rollback()
-            return jsonify({'error': str(e)}), 400
+    user.coins -= item.base_price
+    db.session.commit()
+    
+    return jsonify({"success": True, "coins_left": user.coins})
 
-# ====================== Запуск приложения ======================
+# 4. Кланы
+@app.route('/api/clans/create', methods=['POST'])
+def create_clan():
+    data = request.get_json()
+    user = get_current_user(data['telegram_id'])
+    
+    if user.clan_membership:
+        return jsonify({"error": "Already in a clan"}), 400
+    
+    if user.coins < 500:
+        return jsonify({"error": "Not enough coins"}), 400
+    
+    new_clan = Clan(
+        name=data['name'],
+        creator_id=user.user_id
+    )
+    db.session.add(new_clan)
+    
+    membership = ClanMember(
+        clan_id=new_clan.clan_id,
+        user_id=user.user_id,
+        is_leader=True
+    )
+    db.session.add(membership)
+    
+    user.coins -= 500
+    db.session.commit()
+    
+    return jsonify({"clan_id": new_clan.clan_id}), 201
 
+# 5. Друзья
+@app.route('/api/friends/add', methods=['POST'])
+def add_friend():
+    data = request.get_json()
+    from_user = get_current_user(data['telegram_id'])
+    to_user = User.query.filter_by(telegram_id=data['friend_telegram_id']).first_or_404()
+    
+    if from_user.user_id == to_user.user_id:
+        return jsonify({"error": "Cannot add yourself"}), 400
+    
+    # Проверяем нет ли уже дружбы или заявки
+    existing = FriendRequest.query.filter(
+        ((FriendRequest.from_user_id == from_user.user_id) & 
+         (FriendRequest.to_user_id == to_user.user_id)) |
+        ((FriendRequest.from_user_id == to_user.user_id) & 
+         (FriendRequest.to_user_id == from_user.user_id))
+    ).first()
+    
+    if existing:
+        return jsonify({"error": "Request already exists"}), 400
+    
+    request = FriendRequest(
+        from_user_id=from_user.user_id,
+        to_user_id=to_user.user_id
+    )
+    db.session.add(request)
+    db.session.commit()
+    
+    return jsonify({"success": True})
+
+# Запуск приложения
 if __name__ == '__main__':
     app.run(debug=True)
